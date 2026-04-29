@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-springboot-3
+  labels:
+    app: test-springboot-3
+    mc/cost-center: {{ .Values.governance.costCenter }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: test-springboot-3

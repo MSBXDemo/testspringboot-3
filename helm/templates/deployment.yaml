@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "test-springboot-3.fullname" . }}
+  labels:
+    app.kubernetes.io/name: test-springboot-3
+    app.kubernetes.io/managed-by: helm
+    mc/cost-center: {{ .Values.governance.costCenter }}
+    mc/target-cloud: {{ .Values.governance.targetCloud }}
+    mc/owner: {{ .Values.governance.owner }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: test-springboot-3
+  template:
+    metadata:
+      labels:
+        app: test-springboot-3
+        mc/cost-center: {{ .Values.governance.costCenter }}
+    spec:
+      containers:
+        - name: test-springboot-3
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}

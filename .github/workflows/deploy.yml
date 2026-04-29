@@ -1,0 +1,130 @@
+name: Deploy to MSBX Sandbox
+
+# Auto-runs on first push. Uses GitHub OIDC to assume the shared MSBX
+# scaffolded-deploy role, builds + pushes the Spring Boot image to ECR,
+# creates a dedicated Kubernetes namespace (sandbox-test-springboot-3),
+# and deploys. No secrets are stored in this repo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: '447558490768'
+  ECR_REPO: mastercard/test-springboot-3
+  CLUSTER_NAME: mastercard-msbx-eks
+  SANDBOX_NAMESPACE: sandbox-test-springboot-3
+  SERVICE_NAME: test-springboot-3
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/mastercard-msbx-scaffolded-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" \
+                 --image-scanning-configuration scanOnPush=true \
+                 --tags Key=Tenant,Value=mastercard Key=CostCenter,Value=MC-1234 Key=Sandbox,Value=test-springboot-3
+
+      - name: ECR login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build + push image (Dockerfile does the Maven build internally)
+        id: img
+        run: |
+          TAG="${GITHUB_SHA::8}-$(date -u +%Y%m%d%H%M)"
+          URI="${{ steps.ecr.outputs.registry }}/$ECR_REPO:$TAG"
+          docker build -t "$URI" -t "${{ steps.ecr.outputs.registry }}/$ECR_REPO:latest" .
+          docker push "$URI"
+          docker push "${{ steps.ecr.outputs.registry }}/$ECR_REPO:latest"
+          echo "uri=$URI" >> $GITHUB_OUTPUT
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Provision sandbox namespace + quota
+        run: |
+          kubectl get namespace "$SANDBOX_NAMESPACE" >/dev/null 2>&1 \
+            || kubectl create namespace "$SANDBOX_NAMESPACE"
+          kubectl label namespace "$SANDBOX_NAMESPACE" \
+            tenant=mastercard sandbox=test-springboot-3 \
+            cost-center=MC-1234 \
+            managed-by=msbx-portal --overwrite
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata:
+            name: sandbox-quota
+            namespace: $SANDBOX_NAMESPACE
+          spec:
+            hard:
+              requests.cpu: "2"
+              requests.memory: 4Gi
+              limits.cpu: "4"
+              limits.memory: 8Gi
+              pods: "10"
+          EOF
+
+      - name: Deploy manifests
+        run: |
+          sed -i "s|IMAGE_PLACEHOLDER|${{ steps.img.outputs.uri }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/ingress.yaml
+          kubectl rollout status deployment/$SERVICE_NAME -n $SANDBOX_NAMESPACE --timeout=5m
+
+      - name: Wait for ALB + print sandbox URL
+        run: |
+          for i in {1..30}; do
+            HOST=$(kubectl get ingress "$SERVICE_NAME" -n "$SANDBOX_NAMESPACE" \
+                     -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$HOST" ]; then
+              echo ""
+              echo "==================================================================="
+              echo "  🎉 Sandbox is live!"
+              echo "  URL: http://$HOST"
+              echo "  Try: http://$HOST/api/v1/hello"
+              echo "  Namespace: $SANDBOX_NAMESPACE"
+              echo "==================================================================="
+              echo "SANDBOX_URL=http://$HOST" >> $GITHUB_ENV
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Add summary
+        if: always()
+        run: |
+          {
+            echo "## MSBX Sandbox Deploy Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Service | \`test-springboot-3\` |"
+            echo "| Stack | Java 21 / Spring Boot |"
+            echo "| Namespace | \`$SANDBOX_NAMESPACE\` |"
+            echo "| Cost center | \`MC-1234\` |"
+            echo "| Image | \`${{ steps.img.outputs.uri }}\` |"
+            echo "| Sandbox URL | ${SANDBOX_URL:-_(ALB still provisioning — rerun this workflow in 2 min)_} |"
+            echo "| Hello endpoint | ${SANDBOX_URL:-_pending_}/api/v1/hello |"
+          } >> $GITHUB_STEP_SUMMARY

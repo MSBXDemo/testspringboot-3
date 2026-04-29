@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-springboot-3
+  namespace: sandbox-test-springboot-3
+  labels:
+    app: test-springboot-3
+    sandbox: test-springboot-3
+    cost-center: "MC-1234"
+    tenant: mastercard
+  annotations:
+    mc/cost-center: "MC-1234"
+    mc/target-cloud: aws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-springboot-3
+  template:
+    metadata:
+      labels:
+        app: test-springboot-3
+        tenant: mastercard
+    spec:
+      containers:
+        - name: app
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SANDBOX_NAME
+              value: test-springboot-3
+            - name: COST_CENTER
+              value: "MC-1234"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=75.0"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 384Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 30

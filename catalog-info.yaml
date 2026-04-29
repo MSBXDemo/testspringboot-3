@@ -1,0 +1,20 @@
+apiVersion: backstage.io/v1alpha1
+kind: MCMicroservice
+metadata:
+  name: test-springboot-3
+  title: Test-springboot-3
+  description: test-springboot-3
+  annotations:
+    mc/cost-center: "MC-1234"
+    mc/target-cloud: aws
+    mc/budget-cap-usd: "2000"
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: MSBXDemo/test-springboot-3
+  tags:
+    - java
+    - spring-boot
+    - aws
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/msbx-engineering
